@@ -1,6 +1,6 @@
 {
   "name": "@haichiuuu/pi-ask-user-question-lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A minimal, timeout-free AskUserQuestion tool for Pi with TUI, RPC, and headless support.",
   "type": "module",
   "license": "MIT",

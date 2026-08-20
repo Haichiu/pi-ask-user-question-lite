@@ -3,10 +3,10 @@
  * That implementation is based on Pi's MIT-licensed question example.
  *
  * AskUserQuestion Tool - a question with options, single- or multi-select.
- * Full custom UI: options list + inline editor for "Type something..." (single-select
- * only), or space-toggled checkboxes when `multiSelect` is set. An optional `header`
- * labels the question. Escape in the editor returns to options; Escape in options cancels.
- * Multiple questions share one mounted TUI and advance sequentially without flicker.
+ * Full custom UI: options list + inline editor for "Other…" (single-select only),
+ * or space-toggled checkboxes when `multiSelect` is set. An optional `header` labels
+ * the question. Left returns to the previous question; Escape keeps its cancel behavior.
+ * Multiple questions share one mounted TUI and advance without flicker.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent'
@@ -71,6 +71,9 @@ function questionList(params: Partial<QuestionSpec> & { questions?: QuestionSpec
  * rejecting the call costs a turn while the model recovers from a validation error,
  * which is a poor trade for a display detail. */
 const HEADER_MAX = 12
+const PREVIOUS_LABEL = '← Previous question'
+const otherOption = (): DisplayOption => ({ label: 'Other…', description: 'Press Enter to type your own answer', isOther: true })
+const optionsFor = (spec: QuestionSpec): DisplayOption[] => spec.multiSelect === true ? [...spec.options] : [...spec.options, otherOption()]
 export const shortHeader = (header: string | undefined): string | undefined => (header === undefined ? undefined : header.slice(0, HEADER_MAX))
 
 function checkbox(checked: boolean | undefined): string {
@@ -99,13 +102,14 @@ interface QuestionView {
   optionIndex: number
   editMode: boolean
   multiSelect: boolean
+  canGoBack: boolean
   checked: boolean[]
   editor: Editor
   theme: Theme
 }
 
 function buildQuestionLines(view: QuestionView): string[] {
-  const { width, question, header, progress, options, optionIndex, editMode, multiSelect, checked, editor, theme } = view
+  const { width, question, header, progress, options, optionIndex, editMode, multiSelect, canGoBack, checked, editor, theme } = view
   const lines: string[] = []
   const add = (s: string) => lines.push(truncateToWidth(s, width))
 
@@ -132,16 +136,17 @@ function buildQuestionLines(view: QuestionView): string[] {
   }
 
   lines.push('')
-  add(theme.fg('dim', navHint(editMode, multiSelect)))
+  add(theme.fg('dim', navHint(editMode, multiSelect, canGoBack)))
   add(theme.fg('accent', '─'.repeat(width)))
 
   return lines
 }
 
-function navHint(editMode: boolean, multiSelect: boolean): string {
-  if (editMode) return ' Enter to submit • Esc to go back'
-  if (multiSelect) return ' ↑↓ navigate • Space to toggle • Enter to confirm • Esc to cancel'
-  return ' ↑↓ navigate • Enter to select • Esc to cancel'
+function navHint(editMode: boolean, multiSelect: boolean, canGoBack: boolean): string {
+  if (editMode) return ' Enter to submit • Esc to return to options'
+  const previous = canGoBack ? '← previous • ' : ''
+  if (multiSelect) return ` ${previous}↑↓ navigate • Space to toggle • Enter to confirm • Esc to cancel`
+  return ` ${previous}↑↓ navigate • Enter to select • Esc to cancel`
 }
 
 /** The comma-joined labels of the checked options, in order. */
@@ -169,11 +174,13 @@ export default function question(pi: ExtensionAPI) {
       if (specs.length === 1) return await askOne(specs[0], ctx)
 
       // TUI batches stay inside one custom component; RPC keeps native dialogs.
-      const tuiAnswers = ctx.hasUI && ctx.mode === 'tui' ? await askManyViaOverlay(specs, ctx) : undefined
+      const interactiveAnswers = ctx.hasUI
+        ? ctx.mode === 'tui' ? await askManyViaOverlay(specs, ctx) : await askManyViaDialogs(specs, ctx)
+        : undefined
       const texts: string[] = []
       const collected: QuestionDetails[] = []
       for (let i = 0; i < specs.length; i++) {
-        const result = tuiAnswers ? questionResult(specs[i], tuiAnswers[i] ?? null) : await askOne(specs[i], ctx)
+        const result = interactiveAnswers ? questionResult(specs[i], interactiveAnswers[i] ?? null) : await askOne(specs[i], ctx)
         const detail = result.details as QuestionDetails
         collected.push(detail)
         texts.push(`${specs[i].question}\n${result.content[0].text}`)
@@ -189,7 +196,7 @@ export default function question(pi: ExtensionAPI) {
       const opts = Array.isArray(args.options) ? args.options : []
       if (opts.length) {
         const labels = opts.map((o: OptionWithDesc) => o.label)
-        const shown = multi ? labels : [...labels, 'Type something.']
+        const shown = multi ? labels : [...labels, 'Other…']
         const numbered = shown.map((o, i) => `${i + 1}. ${o}`)
         const optionsLine = `  Options${multi ? ' (multi)' : ''}: ${numbered.join(', ')}`
         text += `\n${theme.fg('dim', optionsLine)}`
@@ -241,12 +248,12 @@ async function askOne(params: QuestionSpec, ctx: ExtensionContext): Promise<{ co
 
   const multiSelect = params.multiSelect === true
   // The free-text option does not compose with checkbox selection, so it is single-select only.
-  const allOptions: DisplayOption[] = multiSelect ? [...params.options] : [...params.options, { label: 'Type something.', isOther: true }]
+  const allOptions = optionsFor(params)
 
   // ui.custom() is terminal-only: with a UI but no terminal (RPC mode) it resolves
   // undefined immediately, which would read as a cancel without ever asking. Ask
   // through the dialog primitives there instead.
-  const result = ctx.mode === 'tui' ? await askViaOverlay(params, ctx, allOptions, multiSelect) : await askViaDialogs(params, ctx, allOptions, multiSelect)
+  const result = ctx.mode === 'tui' ? await askViaOverlay(params, ctx, allOptions, multiSelect) : (await askManyViaDialogs([params], ctx))[0] ?? null
 
   return questionResult(params, result)
 }
@@ -272,9 +279,11 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
     ctx.ui.setWorkingVisible?.(false)
     try {
       return await ctx.ui.custom<Array<QuestionAnswer | null>>((tui: Parameters<Parameters<ExtensionContext['ui']['custom']>[0]>[0], theme: Theme, _kb: unknown, done: (value: Array<QuestionAnswer | null>) => void) => {
-        const options = specs.map((spec) => spec.multiSelect === true ? [...spec.options] : [...spec.options, { label: 'Type something.', isOther: true }])
+        const options = specs.map(optionsFor)
         const checked = options.map((items) => items.map(() => false))
-        const collected: Array<QuestionAnswer | null> = []
+        const drafts: Array<QuestionAnswer | undefined> = Array(specs.length)
+        const optionIndexes = specs.map(() => 0)
+        const customTexts = specs.map(() => '')
         let questionIndex = 0
         let optionIndex = 0
         let editMode = false
@@ -301,27 +310,37 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
           tui.requestRender()
         }
 
-        function finishCurrent(answer: QuestionAnswer | null) {
-          collected.push(answer)
-          if (answer === null || questionIndex === specs.length - 1) {
-            done(collected)
-            return
-          }
-          questionIndex += 1
-          optionIndex = 0
+        function moveTo(index: number) {
+          optionIndexes[questionIndex] = optionIndex
+          questionIndex = index
+          optionIndex = optionIndexes[questionIndex]
           editMode = false
           editor.setText('')
-          refresh()
+        }
+
+        function finishCurrent(answer: QuestionAnswer | null) {
+          if (answer === null) {
+            done([...drafts.slice(0, questionIndex), null] as Array<QuestionAnswer | null>)
+            return
+          }
+          drafts[questionIndex] = answer
+          optionIndexes[questionIndex] = optionIndex
+          if (questionIndex === specs.length - 1) {
+            done(drafts as QuestionAnswer[])
+            return
+          }
+          moveTo(questionIndex + 1)
         }
 
         editor.onSubmit = (value) => {
           const trimmed = value.trim()
-          if (trimmed) finishCurrent({ answer: trimmed, wasCustom: true })
-          else {
-            editMode = false
-            editor.setText('')
+          if (!trimmed) {
             refresh()
+            return
           }
+          customTexts[questionIndex] = trimmed
+          finishCurrent({ answer: trimmed, wasCustom: true })
+          refresh()
         }
 
         function handleInput(data: string) {
@@ -339,13 +358,16 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
 
           if (matchesKey(data, Key.up)) optionIndex = Math.max(0, optionIndex - 1)
           else if (matchesKey(data, Key.down)) optionIndex = Math.min(currentOptions().length - 1, optionIndex + 1)
+          else if (matchesKey(data, Key.left) && questionIndex > 0) moveTo(questionIndex - 1)
           else if (currentSpec().multiSelect === true && data === ' ') currentChecked()[optionIndex] = !currentChecked()[optionIndex]
           else if (matchesKey(data, Key.enter)) {
             if (currentSpec().multiSelect === true) finishCurrent({ answer: selectedLabels(currentOptions(), currentChecked()), wasCustom: false })
             else {
               const selected = currentOptions()[optionIndex]
-              if (selected.isOther) editMode = true
-              else finishCurrent({ answer: selected.label, wasCustom: false, index: optionIndex + 1 })
+              if (selected.isOther) {
+                editor.setText(customTexts[questionIndex])
+                editMode = true
+              } else finishCurrent({ answer: selected.label, wasCustom: false, index: optionIndex + 1 })
             }
           } else if (matchesKey(data, Key.escape)) finishCurrent(null)
           else return
@@ -365,6 +387,7 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
             optionIndex,
             editMode,
             multiSelect: spec.multiSelect === true,
+            canGoBack: questionIndex > 0,
             checked: currentChecked(),
             editor,
             theme,
@@ -388,39 +411,85 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
   return answers ?? [null]
 }
 
-/** Dialog-primitive fallback for UI without a terminal (RPC mode supports
- * select/input/notify but not custom components). Mirrors the overlay's result
- * shape; a dismissed dialog reads as a cancel, same as Escape in the overlay. */
-async function askViaDialogs(params: QuestionSpec, ctx: ExtensionContext, allOptions: DisplayOption[], multiSelect: boolean): Promise<{ answer: string; wasCustom: boolean; index?: number } | null> {
+/** Native-dialog path for RPC and other UI modes without terminal custom components. */
+async function askManyViaDialogs(specs: QuestionSpec[], ctx: ExtensionContext): Promise<Array<QuestionAnswer | null>> {
+  const options = specs.map(optionsFor)
+  const checked = options.map((items) => items.map(() => false))
+  const drafts: Array<QuestionAnswer | undefined> = Array(specs.length)
+  const customTexts = specs.map(() => '')
+  let questionIndex = 0
+
+  while (true) {
+    const answer = await askViaDialogs(
+      specs[questionIndex],
+      ctx,
+      options[questionIndex],
+      checked[questionIndex],
+      questionIndex > 0,
+      drafts[questionIndex],
+      customTexts[questionIndex],
+    )
+    if (answer === 'previous') {
+      questionIndex -= 1
+      continue
+    }
+    if (answer === null) return [...drafts.slice(0, questionIndex), null] as Array<QuestionAnswer | null>
+
+    drafts[questionIndex] = answer
+    if (answer.wasCustom) customTexts[questionIndex] = answer.answer
+    if (questionIndex === specs.length - 1) return drafts as QuestionAnswer[]
+    questionIndex += 1
+  }
+}
+
+async function askViaDialogs(
+  params: QuestionSpec,
+  ctx: ExtensionContext,
+  allOptions: DisplayOption[],
+  checked: boolean[],
+  canGoBack: boolean,
+  currentAnswer?: QuestionAnswer,
+  customText = '',
+): Promise<QuestionAnswer | null | 'previous'> {
   const header = shortHeader(params.header)
-  const title = header ? `[${header}] ${params.question}` : params.question
-  // Number the labels: ctx.ui.select returns the chosen label string, so duplicate
-  // labels (or a model-supplied option named like the free-text entry) would be
-  // ambiguous by text alone; the number is the unambiguous way back to the option.
-  const labels = allOptions.map((option, i) => `${i + 1}. ${option.label}`)
-  if (multiSelect) {
-    const checked = allOptions.map(() => false)
+  const current = currentAnswer ? `\nCurrent answer: ${currentAnswer.answer || '(none)'}` : ''
+  const title = `${header ? `[${header}] ` : ''}${params.question}${current}`
+
+  if (params.multiSelect === true) {
     while (true) {
       const choices = allOptions.map((option, i) => `${i + 1}. [${checked[i] ? 'x' : ' '}] ${option.label}`)
       choices.push(`${choices.length + 1}. Done`)
+      if (canGoBack) choices.push(PREVIOUS_LABEL)
       const choice = await ctx.ui.select(title, choices)
       if (choice === undefined) return null
+      if (choice === PREVIOUS_LABEL) return 'previous'
       const index = choices.indexOf(choice)
       if (index === allOptions.length) return { answer: selectedLabels(allOptions, checked), wasCustom: false }
-      if (index >= 0) checked[index] = !checked[index]
+      if (index >= 0 && index < allOptions.length) checked[index] = !checked[index]
     }
   }
-  const choice = await ctx.ui.select(title, labels)
-  if (choice === undefined) return null
-  const index = labels.indexOf(choice)
-  const chosen = allOptions[index]
-  if (chosen?.isOther === true) {
-    const typed = await ctx.ui.input(params.question, 'Your answer')
-    // A dismissed dialog cancels; a submitted empty answer is an (empty) answer, not a
-    // cancel, so one accidental blank Enter does not abort the rest of a question batch.
-    if (typed === undefined) return null
-    return { answer: typed.trim(), wasCustom: true }
+
+  while (true) {
+    const labels = allOptions.map((option, i) => option.isOther
+      ? `${i + 1}. Other… — press Enter to type`
+      : `${i + 1}. ${option.label}`)
+    if (canGoBack) labels.push(PREVIOUS_LABEL)
+    const choice = await ctx.ui.select(title, labels)
+    if (choice === undefined) return null
+    if (choice === PREVIOUS_LABEL) return 'previous'
+    const index = labels.indexOf(choice)
+    const chosen = allOptions[index]
+    if (chosen?.isOther === true) {
+      while (true) {
+        const typed = await ctx.ui.input(params.question, customText ? `Current answer: ${customText}` : 'Your answer')
+        if (typed === undefined) break
+        const trimmed = typed.trim()
+        if (trimmed) return { answer: trimmed, wasCustom: true }
+        if (customText) return { answer: customText, wasCustom: true }
+      }
+      continue
+    }
+    const answer = chosen?.label ?? choice
+    return { answer, wasCustom: false, index: index + 1 }
   }
-  const answer = chosen?.label ?? choice
-  return { answer, wasCustom: false, index: index + 1 }
 }

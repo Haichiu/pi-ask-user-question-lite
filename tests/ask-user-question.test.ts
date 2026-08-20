@@ -47,7 +47,7 @@ function open(tool: Tool, params: any) {
 }
 
 const options = [{ label: "Alpha" }, { label: "Beta" }];
-const key = { down: "\x1b[B", enter: "\r", escape: "\x1b", space: " " };
+const key = { up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", enter: "\r", escape: "\x1b", space: " " };
 
 describe("AskUserQuestion", () => {
 
@@ -87,11 +87,16 @@ describe("AskUserQuestion", () => {
 		expect(cancelled.details.answer).toBeNull();
 	});
 
-	it("accepts Other free text", async () => {
+	it("makes Other discoverable and keeps empty submissions in the editor", async () => {
 		const { overlay, result } = open(setup(), { question: "Pick", options });
 		overlay.handleInput(key.down);
 		overlay.handleInput(key.down);
+		const optionsView = overlay.render(80).join("\n");
+		expect(optionsView).toContain("Other…");
+		expect(optionsView).toContain("Press Enter to type your own answer");
 		overlay.handleInput(key.enter);
+		overlay.handleInput(key.enter);
+		expect(overlay.render(80).join("\n")).toContain("Your answer:");
 		overlay.handleInput("custom answer");
 		overlay.handleInput(key.enter);
 		expect((await result).content[0].text).toBe("User wrote: custom answer");
@@ -106,21 +111,43 @@ describe("AskUserQuestion", () => {
 		expect((await result).details.answer).toBe("Alpha, Beta");
 	});
 
-	it("keeps one TUI mounted while advancing through a batch", async () => {
+	it("returns to previous TUI questions, replaces answers, and keeps one mount", async () => {
 		const { overlay, result, customCalls, workingVisible } = open(setup(), { questions: [
 			{ question: "First?", header: "Direction", options },
 			{ question: "Second?", header: "Preference", options },
 		] });
-		expect(customCalls()).toBe(1);
-		expect(overlay.render(80).join("\n")).toContain("Question 1/2");
-		overlay.handleInput(key.enter);
-		expect(customCalls()).toBe(1);
-		expect(overlay.render(80).join("\n")).toContain("Question 2/2");
 		overlay.handleInput(key.down);
 		overlay.handleInput(key.enter);
+		expect(overlay.render(80).join("\n")).toContain("← previous");
+		overlay.handleInput(key.left);
+		expect(overlay.render(80).join("\n")).toContain("Question 1/2");
+		overlay.handleInput(key.up);
+		overlay.handleInput(key.enter);
+		expect(overlay.render(80).join("\n")).toContain("Question 2/2");
+		overlay.handleInput(key.enter);
 		const completed = await result;
-		expect(completed.details.questions.map((item: any) => item.answer)).toEqual(["Alpha", "Beta"]);
+		expect(completed.details.questions.map((item: any) => item.answer)).toEqual(["Alpha", "Alpha"]);
+		expect(customCalls()).toBe(1);
 		expect(workingVisible).toEqual([false, true]);
+	});
+
+	it("prefills a previous TUI Other answer for editing", async () => {
+		const { overlay, result } = open(setup(), { questions: [
+			{ question: "First?", options },
+			{ question: "Second?", options },
+		] });
+		overlay.handleInput(key.down);
+		overlay.handleInput(key.down);
+		overlay.handleInput(key.enter);
+		overlay.handleInput("draft");
+		overlay.handleInput(key.enter);
+		overlay.handleInput(key.left);
+		overlay.handleInput(key.enter);
+		expect(overlay.render(80).join("\n")).toContain("draft");
+		overlay.handleInput(" updated");
+		overlay.handleInput(key.enter);
+		overlay.handleInput(key.enter);
+		expect((await result).details.questions.map((item: any) => item.answer)).toEqual(["draft updated", "Alpha"]);
 	});
 
 	it("uses native dialogs in RPC mode, including Other input", async () => {
@@ -129,12 +156,54 @@ describe("AskUserQuestion", () => {
 			hasUI: true,
 			mode: "rpc",
 			ui: {
-				select: async (title: string) => { calls.push(title); return "3. Type something."; },
+				select: async (title: string) => { calls.push(title); return "3. Other… — press Enter to type"; },
 				input: async () => "RPC answer",
 			},
 		});
 		expect(calls[0]).toContain("[Preference]");
 		expect(result.details).toMatchObject({ answer: "RPC answer", wasCustom: true });
+	});
+
+	it("returns to previous RPC questions and replaces the earlier answer", async () => {
+		const choices = ["2. Beta", "← Previous question", "1. Alpha", "2. Beta"];
+		let call = 0;
+		const result = await setup().execute("call", { questions: [
+			{ question: "First?", options },
+			{ question: "Second?", options },
+		] }, undefined, undefined, {
+			hasUI: true,
+			mode: "rpc",
+			ui: { select: async (_title: string, shown: string[]) => {
+				const wanted = choices[call++];
+				return shown.find((item) => item === wanted);
+			} },
+		});
+		expect(result.details.questions.map((item: any) => item.answer)).toEqual(["Alpha", "Beta"]);
+		expect(call).toBe(4);
+	});
+
+	it("preserves RPC Other drafts and treats blank as unchanged", async () => {
+		const selections = ["3. Other… — press Enter to type", "← Previous question", "3. Other… — press Enter to type", "1. Alpha"];
+		const typed = ["draft", ""];
+		const placeholders: string[] = [];
+		let selectCall = 0;
+		let inputCall = 0;
+		const result = await setup().execute("call", { questions: [
+			{ question: "First?", options },
+			{ question: "Second?", options },
+		] }, undefined, undefined, {
+			hasUI: true,
+			mode: "rpc",
+			ui: {
+				select: async (_title: string, shown: string[]) => {
+					const wanted = selections[selectCall++];
+					return shown.find((item) => item === wanted);
+				},
+				input: async (_title: string, placeholder: string) => { placeholders.push(placeholder); return typed[inputCall++]; },
+			},
+		});
+		expect(result.details.questions.map((item: any) => item.answer)).toEqual(["draft", "Alpha"]);
+		expect(placeholders.at(-1)).toContain("Current answer: draft");
 	});
 
 	it("supports multi-select over repeated native RPC dialogs", async () => {
