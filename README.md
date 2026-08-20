@@ -21,7 +21,7 @@ A minimal [`AskUserQuestion`](https://docs.anthropic.com/en/docs/claude-code) to
 ## Install
 
 ```bash
-pi install npm:@haichiu/pi-ask-user-question-lite
+pi install npm:@haichiuuu/pi-ask-user-question-lite
 ```
 
 Or install directly from GitHub:
