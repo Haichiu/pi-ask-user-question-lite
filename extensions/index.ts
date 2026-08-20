@@ -72,6 +72,7 @@ function questionList(params: Partial<QuestionSpec> & { questions?: QuestionSpec
  * which is a poor trade for a display detail. */
 const HEADER_MAX = 12
 const PREVIOUS_LABEL = '← Previous question'
+const NEXT_LABEL = '→ Next question'
 const otherOption = (): DisplayOption => ({ label: 'Other…', description: 'Press Enter to type your own answer', isOther: true })
 const optionsFor = (spec: QuestionSpec): DisplayOption[] => spec.multiSelect === true ? [...spec.options] : [...spec.options, otherOption()]
 export const shortHeader = (header: string | undefined): string | undefined => (header === undefined ? undefined : header.slice(0, HEADER_MAX))
@@ -103,13 +104,14 @@ interface QuestionView {
   editMode: boolean
   multiSelect: boolean
   canGoBack: boolean
+  canGoForward: boolean
   checked: boolean[]
   editor: Editor
   theme: Theme
 }
 
 function buildQuestionLines(view: QuestionView): string[] {
-  const { width, question, header, progress, options, optionIndex, editMode, multiSelect, canGoBack, checked, editor, theme } = view
+  const { width, question, header, progress, options, optionIndex, editMode, multiSelect, canGoBack, canGoForward, checked, editor, theme } = view
   const lines: string[] = []
   const add = (s: string) => lines.push(truncateToWidth(s, width))
 
@@ -136,17 +138,18 @@ function buildQuestionLines(view: QuestionView): string[] {
   }
 
   lines.push('')
-  add(theme.fg('dim', navHint(editMode, multiSelect, canGoBack)))
+  add(theme.fg('dim', navHint(editMode, multiSelect, canGoBack, canGoForward)))
   add(theme.fg('accent', '─'.repeat(width)))
 
   return lines
 }
 
-function navHint(editMode: boolean, multiSelect: boolean, canGoBack: boolean): string {
+function navHint(editMode: boolean, multiSelect: boolean, canGoBack: boolean, canGoForward: boolean): string {
   if (editMode) return ' Enter to submit • Esc to return to options'
-  const previous = canGoBack ? '← previous • ' : ''
-  if (multiSelect) return ` ${previous}↑↓ navigate • Space to toggle • Enter to confirm • Esc to cancel`
-  return ` ${previous}↑↓ navigate • Enter to select • Esc to cancel`
+  const history = [canGoBack ? '← previous' : '', canGoForward ? '→ next' : ''].filter(Boolean).join(' • ')
+  const navigation = history ? `${history} • ` : ''
+  if (multiSelect) return ` ${navigation}↑↓ navigate • Space to toggle • Enter to confirm • Esc to cancel`
+  return ` ${navigation}↑↓ navigate • Enter to select • Esc to cancel`
 }
 
 /** The comma-joined labels of the checked options, in order. */
@@ -359,6 +362,7 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
           if (matchesKey(data, Key.up)) optionIndex = Math.max(0, optionIndex - 1)
           else if (matchesKey(data, Key.down)) optionIndex = Math.min(currentOptions().length - 1, optionIndex + 1)
           else if (matchesKey(data, Key.left) && questionIndex > 0) moveTo(questionIndex - 1)
+          else if (matchesKey(data, Key.right) && questionIndex < specs.length - 1 && drafts[questionIndex] !== undefined) moveTo(questionIndex + 1)
           else if (currentSpec().multiSelect === true && data === ' ') currentChecked()[optionIndex] = !currentChecked()[optionIndex]
           else if (matchesKey(data, Key.enter)) {
             if (currentSpec().multiSelect === true) finishCurrent({ answer: selectedLabels(currentOptions(), currentChecked()), wasCustom: false })
@@ -388,6 +392,7 @@ async function askManyViaOverlay(specs: QuestionSpec[], ctx: ExtensionContext): 
             editMode,
             multiSelect: spec.multiSelect === true,
             canGoBack: questionIndex > 0,
+            canGoForward: questionIndex < specs.length - 1 && drafts[questionIndex] !== undefined,
             checked: currentChecked(),
             editor,
             theme,
@@ -426,11 +431,16 @@ async function askManyViaDialogs(specs: QuestionSpec[], ctx: ExtensionContext): 
       options[questionIndex],
       checked[questionIndex],
       questionIndex > 0,
+      questionIndex < specs.length - 1 && drafts[questionIndex] !== undefined,
       drafts[questionIndex],
       customTexts[questionIndex],
     )
     if (answer === 'previous') {
       questionIndex -= 1
+      continue
+    }
+    if (answer === 'next') {
+      questionIndex += 1
       continue
     }
     if (answer === null) return [...drafts.slice(0, questionIndex), null] as Array<QuestionAnswer | null>
@@ -448,9 +458,10 @@ async function askViaDialogs(
   allOptions: DisplayOption[],
   checked: boolean[],
   canGoBack: boolean,
+  canGoForward: boolean,
   currentAnswer?: QuestionAnswer,
   customText = '',
-): Promise<QuestionAnswer | null | 'previous'> {
+): Promise<QuestionAnswer | null | 'previous' | 'next'> {
   const header = shortHeader(params.header)
   const current = currentAnswer ? `\nCurrent answer: ${currentAnswer.answer || '(none)'}` : ''
   const title = `${header ? `[${header}] ` : ''}${params.question}${current}`
@@ -460,9 +471,11 @@ async function askViaDialogs(
       const choices = allOptions.map((option, i) => `${i + 1}. [${checked[i] ? 'x' : ' '}] ${option.label}`)
       choices.push(`${choices.length + 1}. Done`)
       if (canGoBack) choices.push(PREVIOUS_LABEL)
+      if (canGoForward) choices.push(NEXT_LABEL)
       const choice = await ctx.ui.select(title, choices)
       if (choice === undefined) return null
       if (choice === PREVIOUS_LABEL) return 'previous'
+      if (choice === NEXT_LABEL) return 'next'
       const index = choices.indexOf(choice)
       if (index === allOptions.length) return { answer: selectedLabels(allOptions, checked), wasCustom: false }
       if (index >= 0 && index < allOptions.length) checked[index] = !checked[index]
@@ -474,9 +487,11 @@ async function askViaDialogs(
       ? `${i + 1}. Other… — press Enter to type`
       : `${i + 1}. ${option.label}`)
     if (canGoBack) labels.push(PREVIOUS_LABEL)
+    if (canGoForward) labels.push(NEXT_LABEL)
     const choice = await ctx.ui.select(title, labels)
     if (choice === undefined) return null
     if (choice === PREVIOUS_LABEL) return 'previous'
+    if (choice === NEXT_LABEL) return 'next'
     const index = labels.indexOf(choice)
     const chosen = allOptions[index]
     if (chosen?.isOther === true) {

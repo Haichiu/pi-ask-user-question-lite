@@ -10,10 +10,10 @@ A minimal [`AskUserQuestion`](https://docs.anthropic.com/en/docs/claude-code) to
 - 2–4 described options per question
 - Single-select and multi-select
 - Discoverable free-text `Other…` choice with an explicit Enter hint
-- Previous-question navigation with preserved option, checkbox, and text drafts
+- Previous/next question navigation with preserved option, checkbox, and text drafts
 - One persistent TUI across multi-question flows, avoiding transition flicker
 - Compact `Question 1/N` progress
-- Native RPC `select` and `input` dialogs with a `Previous question` action
+- Native RPC `select` and `input` dialogs with `Previous question` / `Next question` actions
 - Non-blocking JSON/print fallback
 - No human-response timeout
 - Sequential tool execution so dialogs never overlap
@@ -77,11 +77,11 @@ Example input:
 
 | Mode | Behavior |
 | --- | --- |
-| TUI | Persistent keyboard-driven selector; `←` returns to the previous question |
-| RPC | Native `select`/`input` requests with a `Previous question` action |
+| TUI | Persistent keyboard-driven selector; `←` / `→` move through submitted questions |
+| RPC | Native `select`/`input` requests with `Previous question` / `Next question` actions |
 | JSON / print | Immediate plain-text fallback; never blocks waiting for unavailable UI |
 
-In TUI option mode, `←` returns to the previous question and Escape cancels. Escape inside the `Other…` editor returns to its option list. Submitted answers and drafts remain available when moving backward.
+In TUI option mode, `←` returns to the previous question and `→` moves forward when the current question already has a submitted answer. Escape cancels. Escape inside the `Other…` editor returns to its option list. Submitted answers and drafts remain available in both directions.
 
 <details>
 <summary>Compatibility notes</summary>

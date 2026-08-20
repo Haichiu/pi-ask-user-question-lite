@@ -47,7 +47,7 @@ function open(tool: Tool, params: any) {
 }
 
 const options = [{ label: "Alpha" }, { label: "Beta" }];
-const key = { up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", enter: "\r", escape: "\x1b", space: " " };
+const key = { up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", right: "\x1b[C", enter: "\r", escape: "\x1b", space: " " };
 
 describe("AskUserQuestion", () => {
 
@@ -131,6 +131,22 @@ describe("AskUserQuestion", () => {
 		expect(workingVisible).toEqual([false, true]);
 	});
 
+	it("moves forward with right arrow while preserving the submitted answer", async () => {
+		const { overlay, result, customCalls } = open(setup(), { questions: [
+			{ question: "First?", options },
+			{ question: "Second?", options },
+		] });
+		overlay.handleInput(key.down);
+		overlay.handleInput(key.enter);
+		overlay.handleInput(key.left);
+		expect(overlay.render(80).join("\n")).toContain("→ next");
+		overlay.handleInput(key.right);
+		expect(overlay.render(80).join("\n")).toContain("Question 2/2");
+		overlay.handleInput(key.enter);
+		expect((await result).details.questions.map((item: any) => item.answer)).toEqual(["Beta", "Alpha"]);
+		expect(customCalls()).toBe(1);
+	});
+
 	it("prefills a previous TUI Other answer for editing", async () => {
 		const { overlay, result } = open(setup(), { questions: [
 			{ question: "First?", options },
@@ -180,6 +196,23 @@ describe("AskUserQuestion", () => {
 		});
 		expect(result.details.questions.map((item: any) => item.answer)).toEqual(["Alpha", "Beta"]);
 		expect(call).toBe(4);
+	});
+
+	it("moves forward through RPC while preserving the submitted answer", async () => {
+		const choices = ["2. Beta", "← Previous question", "→ Next question", "1. Alpha"];
+		let call = 0;
+		const result = await setup().execute("call", { questions: [
+			{ question: "First?", options },
+			{ question: "Second?", options },
+		] }, undefined, undefined, {
+			hasUI: true,
+			mode: "rpc",
+			ui: { select: async (_title: string, shown: string[]) => {
+				const wanted = choices[call++];
+				return shown.find((item) => item === wanted);
+			} },
+		});
+		expect(result.details.questions.map((item: any) => item.answer)).toEqual(["Beta", "Alpha"]);
 	});
 
 	it("preserves RPC Other drafts and treats blank as unchanged", async () => {
