@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pi coding agent questions
+    url: https://github.com/badlogic/pi-mono
+    about: Questions about Pi itself (not this extension) belong upstream.
