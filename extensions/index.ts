@@ -189,7 +189,8 @@ export default function question(pi: ExtensionAPI) {
         texts.push(`${specs[i].question}\n${result.content[0].text}`)
         if (detail.answer === null) break
       }
-      return { content: [{ type: 'text', text: texts.join('\n\n') }], details: { ...collected[0], questions: collected } as QuestionDetails }
+      const cancelled = collected.some((detail) => detail.answer === null)
+      return { content: [{ type: 'text', text: texts.join('\n\n') }], details: { ...collected[0], ...(cancelled ? { answer: null } : {}), questions: collected } as QuestionDetails }
     },
 
     renderCall(args, theme, _context) {

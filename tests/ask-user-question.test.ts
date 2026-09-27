@@ -51,6 +51,21 @@ const key = { up: "\x1b[A", down: "\x1b[B", left: "\x1b[D", right: "\x1b[C", ent
 
 describe("AskUserQuestion", () => {
 
+	it("renders a partially cancelled batch as cancelled and preserves partial answers", async () => {
+		const tool = setup();
+		const { overlay, result } = open(tool, { questions: [
+			{ question: "First", options }, { question: "Second", options },
+		] });
+		overlay.handleInput(key.enter);
+		overlay.handleInput(key.escape);
+		const value = await result;
+		expect(value.details.answer).toBeNull();
+		expect(value.details.questions.map((q: any) => q.answer)).toEqual(["Alpha", null]);
+		const rendered = (tool as any).renderResult(value, {}, theme, {}).render(80).join("\n");
+		expect(rendered).toContain("Cancelled");
+		expect(rendered).not.toContain("✓");
+	});
+
 	it("registers only the tool contract, with bounded Claude-compatible schema", () => {
 		const tool = setup();
 		expect(tool.name).toBe("AskUserQuestion");
